@@ -1,0 +1,86 @@
+# syntax=docker/dockerfile:1
+
+############################
+# 1) Build stage
+############################
+FROM golang:latest AS build
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=unknown
+
+WORKDIR /src
+
+# 先只拷 go.mod/go.sum 以提升缓存命中率
+COPY go.mod go.sum ./
+# 预下载依赖（启用构建缓存）
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# 再拷源码
+COPY . .
+
+# 编译（使用构建缓存 + 去符号/trimpath）
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -buildvcs=false \
+      -ldflags="-s -w" 
+
+# RUN --mount=type=cache,target=/go/pkg/mod \
+#     --mount=type=cache,target=/root/.cache/go-build \
+#     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+#     go build -trimpath -buildvcs=false \
+#       -ldflags="-s -w \
+#         -X github.com/minio/minio/cmd.Version=${VERSION} \
+#         -X github.com/minio/minio/cmd.ReleaseTag=${VERSION} \
+#         -X github.com/minio/minio/cmd.CommitID=${COMMIT}" 
+
+# 编译（使用构建缓存 + 去符号/trimpath）
+# RUN --mount=type=cache,target=/go/pkg/mod \
+#     --mount=type=cache,target=/root/.cache/go-build \
+#     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+#     go install -v  \
+#     -trimpath -buildvcs=false \
+#     -ldflags="-s -w" \
+#       ; \
+#     ls $(go env GOPATH)/bin/*; 
+
+
+############################
+# 2) Runtime stage
+############################
+FROM alpine:latest
+
+# 固定 UID/GID，便于挂载到不同宿主机/编排环境
+# RUN addgroup -g 10001 minio \
+#  && adduser -D -u 10001 -G minio -h /home/minio -s /sbin/nologin minio \
+#  && apk add --no-cache ca-certificates tzdata wget
+
+RUN apk add --no-cache \
+      ca-certificates tzdata wget minio-client \
+    ;\
+    ln -sf /usr/bin/mcli /usr/local/bin/mc;
+
+# USER minio:minio
+# WORKDIR /data
+
+# 仅拷贝二进制；同时设置属主和执行权限
+COPY --from=build /src/minio /usr/local/bin/minio
+# COPY --from=build /go/bin/minio /usr/local/bin/minio
+
+EXPOSE 9000 9001
+VOLUME ["/data"]
+STOPSIGNAL SIGTERM
+
+# 就绪探针（MinIO 自带 ready/live 路径）
+# HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+#   CMD wget -qO- http://127.0.0.1:9000/minio/health/ready || exit 1
+
+# ENTRYPOINT ["minio"]
+# CMD ["server", "/data", "--address=:9000", "--console-address=:9001"]
+
+COPY dockerscripts/docker-entrypoint.sh /usr/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["/usr/bin/docker-entrypoint.sh"]
+CMD ["minio"]
