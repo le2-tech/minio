@@ -2,7 +2,7 @@ PWD := $(shell pwd)
 GOPATH := $(shell go env GOPATH)
 LDFLAGS := $(shell go run buildscripts/gen-ldflags.go)
 
-GOOS ?= $(shell go env GOOS)
+GOOS ?= $(shell go env GOOS) 
 GOARCH ?= $(shell go env GOARCH)
 
 VERSION ?= $(shell git describe --tags)
